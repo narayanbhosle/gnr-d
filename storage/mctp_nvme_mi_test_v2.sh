@@ -1584,12 +1584,38 @@ start_fio_stress() {
         return 1
     fi
 
+    # Identify the NVMe device backing the OS root filesystem (if any)
+    local os_nvme_dev=""
+    local root_dev
+    root_dev=$(findmnt -rno SOURCE / 2>/dev/null || echo "")
+    # Resolve to the parent NVMe namespace device (e.g. /dev/nvme0n1p2 -> /dev/nvme0n1)
+    if [[ "${root_dev}" =~ ^(/dev/nvme[0-9]+n[0-9]+) ]]; then
+        os_nvme_dev="${BASH_REMATCH[1]}"
+        log_info "OS root filesystem detected on ${os_nvme_dev} (${root_dev}) — will skip"
+    fi
+
     # Discover all NVMe block devices (exclude partitions)
     local nvme_devs=()
     for dev in /dev/nvme*n1; do
         [ -b "${dev}" ] || continue
-        # Skip if mounted or has mounted partitions
-        if findmnt -rn -S "${dev}" &>/dev/null || findmnt -rn -S "${dev}p*" &>/dev/null; then
+        # Skip the drive where the OS is installed
+        if [[ "${dev}" == "${os_nvme_dev}" ]]; then
+            log_warn "Skipping ${dev} — OS root filesystem resides on this drive"
+            continue
+        fi
+        # Skip if the device or any of its partitions are mounted
+        local is_mounted=false
+        if findmnt -rn -S "${dev}" &>/dev/null; then
+            is_mounted=true
+        else
+            for part in "${dev}p"*; do
+                if [ -b "${part}" ] && findmnt -rn -S "${part}" &>/dev/null; then
+                    is_mounted=true
+                    break
+                fi
+            done
+        fi
+        if ${is_mounted}; then
             log_warn "Skipping ${dev} — mounted filesystem detected"
             continue
         fi
